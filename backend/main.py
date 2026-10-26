@@ -1,16 +1,34 @@
+import os
+import sys
 import uuid
+from pathlib import Path
 from typing import Literal
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+# Ensure backend directory is in sys.path so modules can be imported from root
+BACKEND_DIR = Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+# Load .env file from backend or root
+load_dotenv(BACKEND_DIR / ".env")
 load_dotenv()
+
 import coach  # noqa: E402  (after load_dotenv)
 
 app = FastAPI(title="AI Debate Coach")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"],
-                   allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 SESSIONS: dict[str, dict] = {}  # in-memory; swap for a DB in production
 
 
@@ -73,3 +91,29 @@ def summary(sid: str):
     return {"turns": len(turns), "average": avg, "overall": coach.overall(avg),
             "trend": [t["overall"] for t in turns], "fallacy_counts": fall,
             "focus_area": weakest}
+
+
+# Mount and serve built frontend if available
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if FRONTEND_DIST.exists():
+    if (FRONTEND_DIST / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+    @app.get("/")
+    def serve_index():
+        return FileResponse(FRONTEND_DIST / "index.html")
+
+    @app.get("/{full_path:path}")
+    def serve_spa(full_path: str):
+        if full_path.startswith("api"):
+            raise HTTPException(status_code=404, detail="API route not found")
+        target = FRONTEND_DIST / full_path
+        if target.is_file():
+            return FileResponse(target)
+        return FileResponse(FRONTEND_DIST / "index.html")
+else:
+    @app.get("/")
+    def serve_fallback():
+        return {"status": "ok", "message": "AI Debate Coach API is running. Build frontend/dist to view the UI."}
+
